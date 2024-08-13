@@ -1,0 +1,95 @@
+trigger:
+  branches:
+    include:
+      - main      
+  paths:
+   exclude:
+     - azure-dev-build-pipeline.yml
+     - azure-release-build-pipeline.yml     
+
+pool:
+  vmImage: ubuntu-latest
+  
+variables:  
+# group: environment this pipeline is associated
+- group: dev-01-anypoint
+
+steps:
+- task: Cache@2
+  inputs:
+    key: $(Build.SourcesDirectory)/pom.xml
+    path: $(Pipeline.Workspace)/.m2/repository
+  displayName: cache maven repo
+
+- task: DownloadSecureFile@1
+  displayName: 'secure file settings'
+  inputs:
+    secureFile: settings.xml
+
+- task: Maven@3
+  displayName: test
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/develop'))    
+  inputs:
+    mavenPomFile: '$(system.defaultWorkingDirectory)/pom.xml'
+    goals: 'clean test'
+    options: '-s $(Agent.TempDirectory)/settings.xml'
+    publishJUnitResults: false    
+
+- task: Maven@3
+  displayName: package
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/develop'))      
+  inputs:
+    mavenPomFile: '$(system.defaultWorkingDirectory)/pom.xml'  
+    goals: 'clean package -DskipTests'
+    options: '-s $(Agent.TempDirectory)/settings.xml'
+    publishJUnitResults: false
+
+- task: Maven@3
+  displayName: 'Deploy dev'
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/develop'))  
+  inputs:
+    mavenPomFile: '$(system.defaultWorkingDirectory)/pom.xml'  
+    goals: '-U -V -e -B -DskipTests deploy -DmuleDeploy'
+    options: '-s $(Agent.TempDirectory)/settings.xml -Danypoint.userName=$(anypoint.userName) -Danypoint.password=$(anypoint.password) -Dcloudhub.environment=$(cloudhub.environment) -Dcloudhub.api_int_exposure=$(cloudhub.api_int_exposure) -Dcloudhub.api_ext_exposure=$(cloudhub.api_ext_exposure) -Dcloudhub.workerType=$(cloudhub.workerType) -Dcloudhub.workers=$(cloudhub.workers) -Dcloudhub.region=$(cloudhub.region) -Dmule.encryption.key=$(mule.encryption.key) -Dmif.host=$(mif.host) -Dhttp.private.port=8091'
+  timeoutInMinutes: 20
+
+- bash: |
+   # Write your commands here
+   
+   git config --global user.email "deveipapideployer@homehardware.ca"
+   git config --global user.name "deveipapideployer"
+   git checkout develop
+   
+  displayName: 'Set GIT identity'
+
+- task: Maven@3
+  displayName: 'Release Prepare'
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/main'))  
+  inputs:
+    goals: 'release:prepare --batch-mode'
+    options: '-s $(Agent.TempDirectory)/settings.xml -Dmaven.test.skip=true -DskipTests -Dazure.git.user=$(azure.git.user) -Dazure.git.password=$(azure.git.password)'
+    publishJUnitResults: false
+
+- task: Maven@3
+  displayName: 'Release Perform'
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/main'))  
+  inputs:
+    goals: 'release:perform'
+    options: '-s $(Agent.TempDirectory)/settings.xml -Dmaven.test.skip=true -DskipTests'
+    publishJUnitResults: false
+
+- task: CopyFiles@2
+  displayName: 'Copy Files to: $(Build.ArtifactStagingDirectory)'
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/main'))  
+  inputs:
+    SourceFolder: '$(Build.SourcesDirectory)'
+    Contents: '**/*'
+    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Build Artifacts'
+  condition: and(succeeded(),eq(variables['Build.SourceBranch'], 'refs/heads/main'))  
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'
